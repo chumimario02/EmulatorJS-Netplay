@@ -698,7 +698,7 @@ async fn main() {
         .layer(cors);
 
     let port: u16 = std::env::var("PORT")
-        .unwrap_or_else(|_| "3000".into())
+        .unwrap_or_else(|_| "10000".into())
         .parse()
         .unwrap();
 

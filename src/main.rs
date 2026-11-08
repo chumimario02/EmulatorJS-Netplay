@@ -10,7 +10,7 @@ use socketioxide::{
     SocketIo,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -41,6 +41,7 @@ struct Room {
     domain: String,
     password: Option<String>,
     max_players: usize,
+    ready: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -230,6 +231,7 @@ async fn leave_internal(s: &SocketRef, state: &AppState) {
         let mut rooms = state.rooms.write().await;
         if let Some(room) = rooms.get_mut(&session_id) {
             room.players.remove(&player_id);
+            room.ready.remove(&player_id);
             room.peers.retain(|p| p.source != sid && p.target != sid);
 
             if room.owner == sid && !room.players.is_empty() {
@@ -337,6 +339,7 @@ async fn on_connect(socket: SocketRef) {
                         domain,
                         password,
                         max_players,
+                        ready: HashSet::new(),
                     },
                 );
             }
@@ -662,6 +665,37 @@ async fn on_connect(socket: SocketRef) {
             };
 
             emit_to_sockets_excluding_self(&s, &socket_ids, "input", &d).await;
+        },
+    );
+
+    socket.on(
+        "ready",
+        |s: SocketRef, SocketState::<AppState>(state), Data::<Value>(d)| async move {
+            let (session_id, player_id) = {
+                let idx = state.index.read().await;
+                match idx.get(&s.id.to_string()) {
+                    Some(x) => (x.session_id.clone(), x.player_id.clone()),
+                    None => return,
+                }
+            };
+
+            let (all_ready, socket_ids, ready_list) = {
+                let mut rooms = state.rooms.write().await;
+                let Some(room) = rooms.get_mut(&session_id) else { return };
+                room.ready.insert(player_id.clone());
+                let ready_list: Vec<String> = room.ready.iter().cloned().collect();
+                let all_ready = room.ready.len() >= room.players.len() && !room.players.is_empty();
+                let socket_ids = collect_socket_ids(&room.players);
+                (all_ready, socket_ids, ready_list)
+            };
+
+            let payload = json!({ "ready": ready_list });
+            emit_to_sockets_including_self(&s, &socket_ids, "ready-update", &payload).await;
+
+            if all_ready {
+                let payload = json!({ "start": true });
+                emit_to_sockets_including_self(&s, &socket_ids, "start-game", &payload).await;
+            }
         },
     );
 }

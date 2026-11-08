@@ -274,6 +274,10 @@ async fn leave_internal(s: &SocketRef, state: &AppState) {
     if !socket_ids_snapshot.is_empty() {
         let payload = Value::Object(players_snapshot.into_iter().collect());
         emit_to_sockets_excluding_self(s, &socket_ids_snapshot, "users-updated", &payload).await;
+
+        // Reset readiness so remaining players re-sync.
+        let reset_payload = json!({ "ready": [], "reset": true });
+        emit_to_sockets_excluding_self(s, &socket_ids_snapshot, "ready-update", &reset_payload).await;
     }
 
     {
@@ -389,7 +393,7 @@ async fn on_connect(socket: SocketRef) {
 
             let provided_pw = normalize_password(data.password);
 
-            let (players_snapshot, socket_ids_snapshot) = {
+            let (players_snapshot, socket_ids_snapshot, _reset) = {
                 let mut rooms = state.rooms.write().await;
                 let Some(room) = rooms.get_mut(&session_id) else {
                     let _ = ack.send(&("Room not found",));
@@ -411,9 +415,12 @@ async fn on_connect(socket: SocketRef) {
                 extra["socketId"] = json!(s.id.to_string());
                 room.players.insert(player_id.clone(), extra);
 
+                // A new player joins: reset readiness so everyone re-syncs.
+                room.ready.clear();
+
                 let snap = room.players.clone();
                 let sids = collect_socket_ids(&snap);
-                (snap, sids)
+                (snap, sids, true)
             };
 
             s.join(session_id.clone());
@@ -434,6 +441,10 @@ async fn on_connect(socket: SocketRef) {
 
             let payload = json!(players_snapshot);
             emit_to_sockets_including_self(&s, &socket_ids_snapshot, "users-updated", &payload).await;
+
+            // Notify all players to pause and re-ready (new player joined).
+            let reset_payload = json!({ "ready": [], "reset": true });
+            emit_to_sockets_including_self(&s, &socket_ids_snapshot, "ready-update", &reset_payload).await;
         },
     );
 
@@ -670,7 +681,7 @@ async fn on_connect(socket: SocketRef) {
 
     socket.on(
         "ready",
-        |s: SocketRef, SocketState::<AppState>(state), Data::<Value>(d)| async move {
+        |s: SocketRef, SocketState::<AppState>(state), Data::<Value>(_d)| async move {
             let (session_id, player_id) = {
                 let idx = state.index.read().await;
                 match idx.get(&s.id.to_string()) {

@@ -133,14 +133,16 @@ async fn list_rooms(
     Query(q): Query<ListQuery>,
     State(state): State<AppState>,
 ) -> Json<HashMap<String, RoomInfo>> {
-    let Some(dom) = q.domain else { return Json(HashMap::new()); };
+    // domain is ignored on purpose: players may host the site on different
+    // URLs/hosts (localhost, IP, deployed domain, different ports), but rooms
+    // for the same game should still be visible to everyone.
     let Some(gid) = q.game_id else { return Json(HashMap::new()); };
 
     let rooms = state.rooms.read().await;
     let mut out = HashMap::new();
 
     for (session_id, room) in rooms.iter() {
-        if room.domain != dom || room.game_id != gid {
+        if room.game_id != gid {
             continue;
         }
 
